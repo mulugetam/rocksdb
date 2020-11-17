@@ -77,7 +77,10 @@ DBTestBase::DBTestBase(const std::string path, bool env_do_fsync)
     Status s = EncryptionProvider::CreateFromString(
         ConfigOptions(), std::string("test://") + getenv("ENCRYPTED_ENV"),
         &provider);
-    encrypted_env_ = NewEncryptedEnv(mem_env_ ? mem_env_ : base_env, provider);
+    if (s.ok()) {
+      encrypted_env_ =
+          NewEncryptedEnv(mem_env_ ? mem_env_ : base_env, provider);
+    }
   }
 #endif  // !ROCKSDB_LITE
   env_ = new SpecialEnv(encrypted_env_ ? encrypted_env_

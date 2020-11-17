@@ -115,6 +115,17 @@ INSTANTIATE_TEST_CASE_P(EncryptedEnv, EnvBasicTestWithParam,
                         ::testing::Values(ctr_encrypt_env.get()));
 INSTANTIATE_TEST_CASE_P(EncryptedEnv, EnvMoreTestWithParam,
                         ::testing::Values(ctr_encrypt_env.get()));
+
+#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
+// next statements run env test against IPP-AES-256 encryption code.
+static std::unique_ptr<Env> ipp_aes_encrypt_env(
+    NewTestEncryptedEnv(Env::Default(), "test://IPP_AES"));
+INSTANTIATE_TEST_CASE_P(IPPEncryptedEnv, EnvBasicTestWithParam,
+                        ::testing::Values(ipp_aes_encrypt_env.get()));
+INSTANTIATE_TEST_CASE_P(IPPEncryptedEnv, EnvMoreTestWithParam,
+                        ::testing::Values(ipp_aes_encrypt_env.get()));
+#endif  // IPPCP
+
 #endif  // ROCKSDB_LITE
 
 #ifndef ROCKSDB_LITE

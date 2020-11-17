@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
+
 #include <atomic>
 #include <cinttypes>
 #include <condition_variable>
@@ -39,6 +40,7 @@
 #include "rocksdb/cache.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "rocksdb/env_encryption.h"
 #include "rocksdb/filter_policy.h"
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/options.h"
@@ -596,6 +598,19 @@ DEFINE_bool(show_table_properties, false,
             " stats_interval is set and stats_per_interval is on.");
 
 DEFINE_string(db, "", "Use the db with the following name.");
+
+#ifndef ROCKSDB_LITE
+// Read encryption flags
+DEFINE_bool(encrypt_db, false, "If true, the database will be encrypted.");
+
+DEFINE_string(block_cipher, "", "The name of the block cipher.");
+
+DEFINE_string(block_cipher_key, "", "The cipher key.");
+
+DEFINE_uint64(block_cipher_key_size_in_bytes, 32,
+              "The key size (in bytes) of the block cipher.");
+
+#endif  // ROCKSDB_LITE
 
 // Read cache flags
 
@@ -7339,6 +7354,27 @@ int db_bench_tool(int argc, char** argv) {
   if (!FLAGS_hdfs.empty()) {
     FLAGS_env = new ROCKSDB_NAMESPACE::HdfsEnv(FLAGS_hdfs);
   }
+
+#ifndef ROCKSDB_LITE
+  // Check for the encryption flag (and create an encrypted environment)
+  std::shared_ptr<EncryptionProvider> provider;
+  if (FLAGS_encrypt_db) {
+    Status status = EncryptionProvider::CreateFromString(
+        ConfigOptions(), FLAGS_block_cipher, &provider);
+    if (!status.ok()) {
+      fprintf(stderr, "Unable to create provider '%s': %s.\n",
+              FLAGS_block_cipher.c_str(), status.ToString().c_str());
+      exit(1);
+    }
+    status = provider->AddCipher("", FLAGS_block_cipher_key.c_str(),
+                                 FLAGS_block_cipher_key_size_in_bytes, false);
+    if (!status.ok()) {
+      fprintf(stderr, "Unable to add cipher: %s.\n", status.ToString().c_str());
+      exit(1);
+    }
+    FLAGS_env = NewEncryptedEnv(Env::Default(), provider);
+  }
+#endif  // ROCKSDB_LITE
 
   if (!strcasecmp(FLAGS_compaction_fadvice.c_str(), "NONE"))
     FLAGS_compaction_fadvice_e = ROCKSDB_NAMESPACE::Options::NONE;

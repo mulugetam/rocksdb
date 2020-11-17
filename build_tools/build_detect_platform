@@ -29,6 +29,7 @@
 #       -DNUMA                      if the NUMA library is present
 #       -DTBB                       if the TBB library is present
 #       -DMEMKIND                   if the memkind library is present
+#       -DIPPCP                     if the ippcp library is present
 #
 # Using gflags in rocksdb:
 # Our project depends on gflags, which requires users to take some extra steps
@@ -484,6 +485,24 @@ EOF
         fi
     fi
 
+    if ! test $ROCKSDB_DISABLE_IPPCP; then
+        # Test whether ippcp (Intel IPP-Crypto) library is installed
+        # https://github.com/intel/ipp-crypto
+        $CXX $CFLAGS $COMMON_FLAGS -x c++ - -o /dev/null -lippcp 2>/dev/null  <<EOF
+          #include <ippcp.h>
+          int main() {
+            int ctx_size = 0;
+            ippsAESGetSize(&ctx_size);
+            return 0;
+          }
+EOF
+        if [ "$?" = 0 ]; then
+            COMMON_FLAGS="$COMMON_FLAGS -DIPPCP"
+            PLATFORM_LDFLAGS="$PLATFORM_LDFLAGS -lippcp"
+            JAVA_LDFLAGS="$JAVA_LDFLAGS -lippcp"
+        fi
+    fi
+
     if ! test $ROCKSDB_DISABLE_PTHREAD_MUTEX_ADAPTIVE_NP; then
         # Test whether PTHREAD_MUTEX_ADAPTIVE_NP mutex type is available
         $CXX $CFLAGS -x c++ - -o /dev/null 2>/dev/null  <<EOF
@@ -667,6 +686,8 @@ if test "$TRY_SSE_ETC"; then
   # SSE4.2 available since nehalem, ca. 2008-2010
   # Includes POPCNT for BitsSetToOne, BitParity
   TRY_SSE42="-msse4.2"
+  # SSE2 available since Pentium 4, ca. 2000-2005
+  TRY_SSE2="-msse2"
   # PCLMUL available since westmere, ca. 2010-2011
   TRY_PCLMUL="-mpclmul"
   # AVX2 available since haswell, ca. 2013-2015
@@ -689,8 +710,27 @@ $CXX $PLATFORM_CXXFLAGS $COMMON_FLAGS $TRY_SSE42 -x c++ - -o /dev/null 2>/dev/nu
 EOF
 if [ "$?" = 0 ]; then
   COMMON_FLAGS="$COMMON_FLAGS $TRY_SSE42 -DHAVE_SSE42"
-elif test "$USE_SSE"; then
-  echo "warning: USE_SSE specified but compiler could not use SSE intrinsics, disabling" >&2
+else
+  # SSE4.2 is not available
+  if test "$USE_SSE"; then
+    echo "warning: USE_SSE specified but compiler could not use SSE42 intrinsics, disabling" >&2
+  fi
+
+  # Check for SSE2 (IPPCP requires SSE2 and above)
+  $CXX $PLATFORM_CXXFLAGS $COMMON_FLAGS -x c++ - -o /dev/null 2>/dev/null <<EOF
+    #include <cstdint>
+    #include <emmintrin.h>
+    int main() {
+      const auto x = _mm_set_epi32(0, 0, 0, 0);
+      (void)x;
+    }
+EOF
+  if [ "$?" = 0 ]; then
+    COMMON_FLAGS="$COMMON_FLAGS $TRY_SSE2 -DHAVE_SSE2"
+  elif test "$USE_SSE"; then
+    # SSE2 is not available
+    echo "warning: USE_SSE specified but compiler could not use SSE2 intrinsics, disabling" >&2
+  fi
 fi
 
 $CXX $PLATFORM_CXXFLAGS $COMMON_FLAGS $TRY_PCLMUL -x c++ - -o /dev/null 2>/dev/null <<EOF

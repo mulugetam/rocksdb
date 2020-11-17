@@ -87,6 +87,7 @@ LIB_SOURCES =                                                   \
   env/fs_posix.cc                                               \
   env/file_system_tracer.cc                                     \
   env/io_posix.cc                                               \
+  env/ipp_aes_ctr_provider.cc                                   \
   env/mock_env.cc                                               \
   file/delete_scheduler.cc                                      \
   file/file_prefetch_buffer.cc                                  \

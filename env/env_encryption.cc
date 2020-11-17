@@ -10,9 +10,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
-#include <iostream>
 
 #include "env/env_encryption_ctr.h"
+#include "env/ipp_aes_ctr_provider.h"
 #include "monitoring/perf_context_imp.h"
 #include "rocksdb/convenience.h"
 #include "util/aligned_buffer.h"
@@ -62,6 +62,8 @@ Status EncryptionProvider::CreateFromString(
     result->reset(new CTREncryptionProvider());
   } else if (is_test) {
     result->reset(new CTREncryptionProvider());
+  } else if (id == IppAESCTRProvider::kName()) {
+    status = IppAESCTRProvider::CreateProvider(id, result);
   } else {
     return Status::NotSupported("Could not find provider ", value);
   }
