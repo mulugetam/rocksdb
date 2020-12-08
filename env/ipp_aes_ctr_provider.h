@@ -8,8 +8,6 @@
 
 #if !defined(ROCKSDB_LITE)
 
-#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
-
 // Includes Intel's Integrated Performance Primitives for Cryptography (IPPCP).
 // IPPCP is lightweight cryptography library that is highly-optimized for
 // various Intel CPUs.
@@ -19,51 +17,24 @@
 //
 // Download URL: https://github.com/intel/ipp-crypto.
 //
-#include <emmintrin.h>
-#include <ippcp.h>
-
-#endif  // IPPCP
 
 #include <string>
 
 #include "rocksdb/env_encryption.h"
 
+// The ipp-crypto AES context structure
+typedef struct _cpRijndael128 IppsAESSpec;
+
 namespace ROCKSDB_NAMESPACE {
 
+// AES-128, AES-192, and AES-256 encryptions are all supported.
 enum struct KeySize { AES_128 = 16, AES_192 = 24, AES_256 = 32 };
 
-#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
-
-class IppAESCTRCipherStream : public BlockAccessCipherStream {
- public:
-  static constexpr size_t kBlockSize = 16;    // in bytes
-  static constexpr size_t kCounterLen = 128;  // in bits
-
-  IppAESCTRCipherStream(IppsAESSpec* aes_ctx, const char* init_vector);
-
-  virtual Status Encrypt(uint64_t fileOffset, char* data,
-                         size_t dataSize) override;
-  virtual Status Decrypt(uint64_t fileOffset, char* data,
-                         size_t dataSize) override;
-  virtual size_t BlockSize() override { return kBlockSize; }
-
- protected:
-  // These functions are not needed and will never be called!
-  virtual void AllocateScratch(std::string&) override {}
-  virtual Status EncryptBlock(uint64_t, char*, char*) override {
-    return Status::NotSupported("Operation not supported.");
-  }
-  virtual Status DecryptBlock(uint64_t, char*, char*) override {
-    return Status::NotSupported("Operation not supported.");
-  }
-
- private:
-  IppsAESSpec* aes_ctx_;
-  __m128i init_vector_;
-};
-
-#endif  // IPPCP
-
+// This encryption provider uses AES block cipher and a CTR mode of operation
+// with a cryptographically secure IV that is randomly generated.
+//
+// Note: a prefix size of 4096 (4K) is chosen for optimal performance.
+//
 class IppAESCTRProvider : public EncryptionProvider {
  public:
   static constexpr size_t kPrefixSize = 4096;
@@ -93,13 +64,11 @@ class IppAESCTRProvider : public EncryptionProvider {
   virtual ~IppAESCTRProvider();
 
  private:
-#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
   int ctx_size_;
   KeySize key_size_;
   IppsAESSpec* aes_ctx_;
   IppAESCTRProvider()
       : ctx_size_(0), key_size_(KeySize::AES_256), aes_ctx_(nullptr) {}
-#endif  // IPPCP
   IppAESCTRProvider(const IppAESCTRProvider&) = delete;
   IppAESCTRProvider& operator=(const IppAESCTRProvider&) = delete;
 };

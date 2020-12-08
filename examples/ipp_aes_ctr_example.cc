@@ -18,8 +18,6 @@ using namespace ROCKSDB_NAMESPACE;
 std::string kDBPath = "/tmp/ipp_aes_example";
 
 int main() {
-  setbuf(stdout, NULL);
-
 #if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
   DB* db;
   Options options;
@@ -38,6 +36,7 @@ int main() {
   status = DB::Open(options, kDBPath, &db);
   assert(status.ok());
 
+  setbuf(stdout, NULL);
   printf("writing 1M records...");
   WriteOptions w_opts;
   for (int i = 0; i < 1000000; ++i) {

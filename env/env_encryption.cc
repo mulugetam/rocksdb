@@ -60,10 +60,10 @@ Status EncryptionProvider::CreateFromString(
   }
   if (id == kCTRProviderName) {
     result->reset(new CTREncryptionProvider());
-  } else if (is_test) {
-    result->reset(new CTREncryptionProvider());
   } else if (id == IppAESCTRProvider::kName()) {
     status = IppAESCTRProvider::CreateProvider(id, result);
+  } else if (is_test) {
+    result->reset(new CTREncryptionProvider());
   } else {
     return Status::NotSupported("Could not find provider ", value);
   }

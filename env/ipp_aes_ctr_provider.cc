@@ -8,6 +8,13 @@
 
 #include "ipp_aes_ctr_provider.h"
 
+#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
+
+#include <emmintrin.h>
+#include <ippcp.h>
+
+#endif  // IPPCP
+
 #include "util/string_util.h"
 
 #endif
@@ -15,6 +22,108 @@
 namespace ROCKSDB_NAMESPACE {
 
 #ifndef ROCKSDB_LITE
+
+#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
+
+// IppAESCTRCipherStream implements BlockAccessCipherStream using AES block
+// cipher and a CTR mode of operation.
+//
+// Since ipp-crypto can handle block sizes larger than kBlockSize (16 bytes for
+// AES) by chopping them internally into KBlockSize bytes, there is no need to
+// support the EncryptBlock and DecryptBlock member functions (and they will
+// never be called).
+//
+// See https://github.com/intel/ipp-crypto#documentation
+class IppAESCTRCipherStream : public BlockAccessCipherStream {
+ public:
+  static constexpr size_t kBlockSize = 16;    // in bytes
+  static constexpr size_t kCounterLen = 128;  // in bits
+
+  IppAESCTRCipherStream(IppsAESSpec* aes_ctx, const char* init_vector);
+
+  virtual Status Encrypt(uint64_t fileOffset, char* data,
+                         size_t dataSize) override;
+  virtual Status Decrypt(uint64_t fileOffset, char* data,
+                         size_t dataSize) override;
+  virtual size_t BlockSize() override { return kBlockSize; }
+
+ protected:
+  // These functions are not needed and will never be called!
+  virtual void AllocateScratch(std::string&) override {}
+  virtual Status EncryptBlock(uint64_t, char*, char*) override {
+    return Status::NotSupported("Operation not supported.");
+  }
+  virtual Status DecryptBlock(uint64_t, char*, char*) override {
+    return Status::NotSupported("Operation not supported.");
+  }
+
+ private:
+  IppsAESSpec* aes_ctx_;
+  __m128i init_vector_;
+};
+
+IppAESCTRCipherStream::IppAESCTRCipherStream(IppsAESSpec* aes_ctx,
+                                             const char* init_vector)
+    : aes_ctx_(aes_ctx) {
+  init_vector_ = _mm_loadu_si128((__m128i*)init_vector);
+}
+
+Status IppAESCTRCipherStream::Encrypt(uint64_t fileOffset, char* data,
+                                      size_t dataSize) {
+  if (dataSize == 0) return Status::OK();
+
+  size_t index = fileOffset / kBlockSize;
+  size_t offset = fileOffset % kBlockSize;
+
+  Ipp8u ctr_block[kBlockSize];
+
+  // evaluate the counter block from the block index
+  __m128i counter = _mm_add_epi64(init_vector_, _mm_cvtsi64_si128(index));
+  Ipp8u* ptr_counter = (Ipp8u*)&counter;
+  for (size_t i = 0; i < kBlockSize; ++i)
+    ctr_block[i] = ptr_counter[kBlockSize - 1 - i];
+
+  IppStatus ipp_status = ippStsNoErr;
+
+  // if we are block-aligned we can encrypt the entire dataset at once. If not,
+  // we need to treat the last remaining (non-aligned) block separately.
+  //
+  // See:
+  // https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38a.pdf
+  if (offset == 0) {
+    ipp_status = ippsAESEncryptCTR((Ipp8u*)(data), (Ipp8u*)data, dataSize,
+                                   aes_ctx_, ctr_block, kCounterLen);
+  } else {
+    Ipp8u zero_block[kBlockSize]{0};
+    ipp_status = ippsAESEncryptCTR(zero_block, zero_block, kBlockSize, aes_ctx_,
+                                   ctr_block, kCounterLen);
+    if (ipp_status != ippStsNoErr)
+      return Status::Aborted(ippcpGetStatusString(ipp_status));
+
+    size_t n = std::min(kBlockSize - offset, dataSize);
+    for (size_t i = 0; i < n; ++i) data[i] ^= zero_block[offset + i];
+    memset(zero_block, 0, kBlockSize);
+
+    n = kBlockSize - offset;
+    if (dataSize > n) {
+      Ipp8u* ptr = (Ipp8u*)(data + n);
+      ipp_status = ippsAESEncryptCTR(ptr, ptr, dataSize - n, aes_ctx_,
+                                     ctr_block, kCounterLen);
+    }
+  }
+
+  if (ipp_status == ippStsNoErr) return Status::OK();
+
+  return Status::Aborted(ippcpGetStatusString(ipp_status));
+}
+
+Status IppAESCTRCipherStream::Decrypt(uint64_t fileOffset, char* data,
+                                      size_t dataSize) {
+  // Decryption is implemented as encryption in CTR mode of operation
+  return Encrypt(fileOffset, data, dataSize);
+}
+
+#endif  // IPPCP
 
 Status IppAESCTRProvider::CreateProvider(
     const std::string& id, std::shared_ptr<EncryptionProvider>* provider) {
@@ -28,7 +137,8 @@ Status IppAESCTRProvider::CreateProvider(
 #else
   (void)id;
   (void)provider;
-  return Status::Aborted("ipp-crypto library not found and requires SSE2+.");
+  return Status::NotSupported(
+      "ipp-crypto library not found and requires SSE2+.");
 #endif  // IPPCP
 }
 
@@ -38,21 +148,16 @@ Status IppAESCTRProvider::AddCipher(const std::string& /*descriptor*/,
 #if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
   // We currently don't support more than one encryption key
   if (aes_ctx_ != nullptr) {
-    return Status::NotSupported("Multiple encryption keys not supported.");
+    return Status::InvalidArgument("Multiple encryption keys not supported.");
   }
 
   // AES supports key sizes of only 16, 24, or 32 bytes
   if (len != 16 && len != 24 && len != 32) {
-    return Status::NotSupported("Invalid key size in provider.");
+    return Status::InvalidArgument("Invalid key size in provider.");
   }
 
-  size_t key_size = std::string(cipher).size();
-  if (key_size != len) {
-    return Status::NotSupported("Key size mismatch in provider.");
-  }
-
-  // key_size is in bytes
-  switch (key_size) {
+  // len is in bytes
+  switch (len) {
     case 16:
       key_size_ = KeySize::AES_128;
       break;
@@ -105,6 +210,7 @@ Status IppAESCTRProvider::CreateNewPrefix(const std::string& /*fname*/,
   const size_t rnd_size = sizeof(Ipp32u);
   assert(prefixLength % rnd_size == 0);
   for (size_t i = 0; i < prefixLength; i += rnd_size) {
+    // generate a cryptographically secured random number
     ipp_status = ippsPRNGenRDRAND(&rnd, rnd_size << 3, nullptr);
     if (ipp_status != ippStsNoErr)
       return Status::Aborted(ippcpGetStatusString(ipp_status));
@@ -144,60 +250,6 @@ IppAESCTRProvider::~IppAESCTRProvider() {
   delete[](Ipp8u*) aes_ctx_;
 #endif  // IPPCP
 }
-
-#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
-
-IppAESCTRCipherStream::IppAESCTRCipherStream(IppsAESSpec* aes_ctx,
-                                             const char* init_vector)
-    : aes_ctx_(aes_ctx) {
-  init_vector_ = _mm_loadu_si128((__m128i*)init_vector);
-}
-
-Status IppAESCTRCipherStream::Encrypt(uint64_t fileOffset, char* data,
-                                      size_t dataSize) {
-  if (dataSize == 0) return Status::OK();
-
-  size_t index = fileOffset / kBlockSize;
-  size_t offset = fileOffset % kBlockSize;
-
-  Ipp8u ctr_block[kBlockSize];
-
-  __m128i counter = _mm_add_epi64(init_vector_, _mm_cvtsi64_si128(index));
-  Ipp8u* ptr_counter = (Ipp8u*)&counter;
-  for (size_t i = 0; i < kBlockSize; ++i)
-    ctr_block[i] = ptr_counter[kBlockSize - 1 - i];
-
-  IppStatus ipp_status = ippStsNoErr;
-  if (offset == 0) {
-    ipp_status = ippsAESEncryptCTR((Ipp8u*)(data), (Ipp8u*)data, dataSize,
-                                   aes_ctx_, ctr_block, kCounterLen);
-  } else {
-    Ipp8u zero_block[kBlockSize]{0};
-    ipp_status = ippsAESEncryptCTR(zero_block, zero_block, kBlockSize, aes_ctx_,
-                                   ctr_block, kCounterLen);
-    size_t n = std::min(kBlockSize - offset, dataSize);
-    for (size_t i = 0; i < n; ++i) data[i] ^= zero_block[offset + i];
-    memset(zero_block, 0, kBlockSize);
-
-    n = kBlockSize - offset;
-    if (dataSize > n) {
-      Ipp8u* ptr = (Ipp8u*)(data + n);
-      ipp_status = ippsAESEncryptCTR(ptr, ptr, dataSize - n, aes_ctx_,
-                                     ctr_block, kCounterLen);
-    }
-  }
-
-  if (ipp_status == ippStsNoErr) return Status::OK();
-
-  return Status::Aborted(ippcpGetStatusString(ipp_status));
-}
-
-Status IppAESCTRCipherStream::Decrypt(uint64_t fileOffset, char* data,
-                                      size_t dataSize) {
-  return Encrypt(fileOffset, data, dataSize);
-}
-
-#endif  // IPPCP
 
 #endif  // ROCKSDB_LITE
 
