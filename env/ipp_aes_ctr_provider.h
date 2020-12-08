@@ -22,9 +22,6 @@
 
 #include "rocksdb/env_encryption.h"
 
-// The ipp-crypto AES context structure
-typedef struct _cpRijndael128 IppsAESSpec;
-
 namespace ROCKSDB_NAMESPACE {
 
 // AES-128, AES-192, and AES-256 encryptions are all supported.
@@ -64,11 +61,13 @@ class IppAESCTRProvider : public EncryptionProvider {
   virtual ~IppAESCTRProvider();
 
  private:
+#if defined(IPPCP) && (defined(HAVE_SSE42) || defined(HAVE_SSE2))
   int ctx_size_;
   KeySize key_size_;
   IppsAESSpec* aes_ctx_;
   IppAESCTRProvider()
       : ctx_size_(0), key_size_(KeySize::AES_256), aes_ctx_(nullptr) {}
+#endif
   IppAESCTRProvider(const IppAESCTRProvider&) = delete;
   IppAESCTRProvider& operator=(const IppAESCTRProvider&) = delete;
 };
